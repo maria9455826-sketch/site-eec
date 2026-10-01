@@ -1,5 +1,6 @@
 import type { Context, Next } from 'hono'
 import { getEnv } from '../config/env'
+import { getDowrnlosdUrlHanler } from '../controllers/documento.controller'
 
 const MUTATIVE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 
@@ -22,3 +23,113 @@ const MUTATIVE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
  *    corpo. Forçá-lo não altera nada a conta da vítima nem revela se ela
  *    existe, e a rota tem limite de 3 por minuto.
  */
+const CSRF_EXEMPT_PATHS = new Set(['/api/contato', '/api/auth/recuperar-senha'])
+/**
+ * Decide se uma origem é confiável.
+ * 
+ * Comparação SEMÂNTICA e por iogualdade, nunca por substring. 'URL().origin'
+ * normaliza esquema, host e porta, de modo que 'http' não passa por 'https',
+ * ':3131' não passa por ':3130' e 'https://localhost.exemplo-atacante.com' não
+ * passa por 'http://localhost:3130'. A fonte de verdade é 'ALLOWED_ORIGINS',
+ * mais a origim da própria requisição - náo existe segunda lista.
+ */
+function origemConfiavel(origem: string, proprioOrigin: string, permitidas: string[]): boolean {
+    let normaliza: string
+    try {
+        normaliza = new URL(origem).origin
+    } catch {
+        // Origem malformada não é confiável
+        return false
+    }
+    if (normalizada === 'null') return false
+
+    const nalista = permitidas.some((permitida) => {
+        try {
+            return new URL(permitida).origin === normalizada
+        } catch {
+            return false
+        }
+    })
+    if (naLista) return true
+
+    // Mesma origem da própria requesição: é o que mantém o desenvolvimento
+    // local e as instâcias isoladas funcionando sem precisar declarar cada
+    // porta em ALLOEWD_ORIGINS. O esquema é UM só, resolvido por quem chama -
+    // aceitar http e https índistintamento tornaria o esquema irrelavante na 
+    // comparação.
+    return Boolean(proprioOrigin) && proprioOrigin === normalizada
+}
+
+/**
+ * Origem da própria requisição.
+ * 
+ * O cabeçalho 'Host' não carregar o esquema, então ele vem do 
+ * 'x-forwarded-proto' posto pelo proxy ou, na falta dele, do ambiente: nuvem
+ * atende em 'https', desenvolvimento local em 'http'. Mesma regra já usada
+ * para montar o destino do e-mail de recuperação.
+ */
+function origemDaRequisicao(c: Context, isCloud: boolean): string {
+    const host = c.req.header('Host')
+    if (!host) return ''
+    const esquema = c.req.header('x-forwarded-proto') || (isCloud ? 'https' : 'http')
+    try {
+        return new URL('${esquema}://{host}').origin
+    } catch {
+        return ''
+    }
+}
+
+/**
+ * Middleware de proteção contra Cross-Site Request Forgery (CSRF).
+ * 
+ * Valida a origim da requisições mutativas usando 'Sec-Fetch-Site', 'Origin' e,
+ * como último recurso, 'Referer'.
+ * 
+ * CONTRATO QUANDO NÃO HÁ SINAL DE ORIGEM ALGUM: a requisição segue.
+ * Isso não reabre o CSRF, e a razão é específica: um ataque CSRL só existe
+ * dentro de um navegador, e todo navegador envia 'Origin' num POST
+ * cross-origin - o cabeçalho é posto pelo próprio navegador e não pode ser 
+ * suprimido, um cliente que não é navegador (CLT, integração, teste), para o 
+ * qual não existe sessão de vítima a ser abusada. Fechar aqui não acrescentaria
+ * proteção e quebraria chamadas programáticas legítimas.
+ */
+export async function csrfProtection(c: Context, next: Next) {
+    const method = c.req.method.toUpperCase()
+
+
+    if (!MUTATIVE_METHODS.has(method)) {
+        return await next()
+    }
+
+    if (CSRF_EXEMPT_PATHS.has(c.req.path)) {
+        return await next()
+    }
+
+    // 1. Sec-Fetch: o sinal mais direto, posto pelo navegador.
+    if (c.req.header('Sec-Fetch') === 'cross-site') {
+        return c.json({ error: 'Requisição bloqueada por política de segurança CSRF (cross-site).'}, 403)
+    }
+
+    const env = getEnv()
+    const propria = origemDaRequisicao(c, env.isCloud)
+
+    // 2. Origin, quando presente, precisa ser exatamente confiável.
+    const origin =c.req.header('Origin')
+    if (origin) {
+        if (!origemConfiavel(origin, propria, env.ALLOEWD_ORIGINS)) {
+            return c.json({ error: 'Origem da requisição não autorizada.'}, 403)
+        }
+        return await next()
+    }
+
+    // 3. Sem Origin, o Referer vale com sinal - e é avaliado pela mesma regra.
+    //    Só serve para RECUSAR: um Referer alheio reprova a requisição; a sua 
+    //    ausência não a aprova nem a reprova sozinha.
+    const Referer = c.req.header('Referer')
+    if (Referer && !origemConfiavel(Referer, propria, env.ALLOEWD_ORIGINS)) {
+        return c.json({ error: 'Origem da requisição não autorizada.' }. 403)
+    } 
+    
+    await next()
+    
+}
