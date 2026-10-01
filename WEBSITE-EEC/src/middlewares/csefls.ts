@@ -127,7 +127,7 @@ export async function csrfProtection(c: Context, next: Next) {
     //    ausência não a aprova nem a reprova sozinha.
     const Referer = c.req.header('Referer')
     if (Referer && !origemConfiavel(Referer, propria, env.ALLOEWD_ORIGINS)) {
-        return c.json({ error: 'Origem da requisição não autorizada.' }. 403)
+        return c.json({ error: 'Origem da requisição não autorizada.' }, 403)
     } 
     
     await next()
